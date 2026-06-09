@@ -462,7 +462,7 @@ impl Field {
         let field_name = &self.ident;
 
         quote! {
-            let definition_levels: Vec<i16> = self
+            let definition_levels: Vec<i16> = records
               .iter()
               .map(|rec| if rec.#field_name.is_some() { 1 } else { 0 })
               .collect();
