@@ -140,6 +140,23 @@ pub fn parquet_record_writer(input: proc_macro::TokenStream) -> proc_macro::Toke
     let field_types: Vec<proc_macro2::TokenStream> =
         field_infos.iter().map(|x| x.parquet_type()).collect();
 
+    let schema_fn = quote! {
+    fn schema(&self) -> ::std::result::Result<::parquet::schema::types::TypePtr, ::parquet::errors::ParquetError> {
+        use ::parquet::schema::types::Type as ParquetType;
+        use ::parquet::schema::types::TypePtr;
+        use ::parquet::basic::LogicalType;
+
+        let mut fields: ::std::vec::Vec<TypePtr> = ::std::vec::Vec::new();
+        #(
+          #field_types
+        );*;
+        let group = ParquetType::group_type_builder("rust_schema")
+          .with_fields(fields)
+          .build()?;
+        Ok(group.into())
+      }
+    };
+
     (quote! {
     impl #generics ::parquet::record::RecordWriter<#derived_for #generics> for &[#derived_for #generics] {
       fn write_to_row_group<W: ::std::io::Write + Send>(
@@ -166,20 +183,38 @@ pub fn parquet_record_writer(input: proc_macro::TokenStream) -> proc_macro::Toke
         Ok(())
       }
 
-      fn schema(&self) -> ::std::result::Result<::parquet::schema::types::TypePtr, ::parquet::errors::ParquetError> {
-        use ::parquet::schema::types::Type as ParquetType;
-        use ::parquet::schema::types::TypePtr;
-        use ::parquet::basic::LogicalType;
+      #schema_fn
+    }
 
-        let mut fields: ::std::vec::Vec<TypePtr> = ::std::vec::Vec::new();
+    impl #generics ::parquet::record::RecordWriter<#derived_for #generics> for &[&[#derived_for #generics]] {
+      fn write_to_row_group<W: ::std::io::Write + Send>(
+        &self,
+        row_group_writer: &mut ::parquet::file::writer::SerializedRowGroupWriter<'_, W>
+      ) -> ::std::result::Result<(), ::parquet::errors::ParquetError> {
+        use ::parquet::column::writer::ColumnWriter;
+
+        let mut row_group_writer = row_group_writer;
+
         #(
-          #field_types
-        );*;
-        let group = ParquetType::group_type_builder("rust_schema")
-          .with_fields(fields)
-          .build()?;
-        Ok(group.into())
+          {
+              let mut some_column_writer = row_group_writer.next_column().unwrap();
+              if let Some(mut column_writer) = some_column_writer {
+                  for r in *self {
+                    // turn &&T into &T
+                    let records = *r;
+                    #writer_snippets
+                  }
+                  column_writer.close()?;
+              } else {
+                  return Err(::parquet::errors::ParquetError::General("Failed to get next column".into()))
+              }
+          }
+        );*
+
+        Ok(())
       }
+
+      #schema_fn
     }
   }).into()
 }
